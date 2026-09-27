@@ -1,0 +1,19 @@
+# PyTorch: on Windows CPU, install first (faster than default PyPI on slow networks):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2.0
+torchaudio>=2.2.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+soundfile>=0.12.0
+
+# Dataset (after you download MUSDB18 — see docs/MUSDB18_SETUP.md)
+musdb>=0.4.0
+
+# Metrics (training evaluation)
+museval>=0.4.0
+
+# App (Step 10)
+gradio>=4.0.0
+
+# Optional: industry-quality separation for demo compare (see scripts/separate_demucs.py)
+# demucs>=4.0.0
