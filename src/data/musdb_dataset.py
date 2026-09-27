@@ -11,7 +11,7 @@ try:
 except ImportError:
     musdb = None
 
-STEM_NAMES = ("vocals", "drums", "bass", "other")
+from src.data.stems import STEM_NAMES_4 as STEM_NAMES
 
 
 def get_musdb_path() -> Path:
