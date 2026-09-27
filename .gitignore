@@ -1,7 +1,10 @@
 .venv/
 /data/
 outputs/
-checkpoints/
+# Weights + README for collaborator handoff (not full dataset zips)
+checkpoints/**
+!checkpoints/*.pt
+!checkpoints/README.md
 .env
 __pycache__/
 *.pyc
