@@ -3,7 +3,13 @@
 import torch
 import torch.nn.functional as F
 
-from src.audio.stft import StftConfig, istft_from_magnitude, log_mag, magnitude_spectrogram
+from src.audio.stft import (
+    StftConfig,
+    complex_spectrogram,
+    istft_from_magnitude,
+    log_mag,
+    magnitude_spectrogram,
+)
 from src.data.stems import STEM_NAMES_4, stem_names_for
 
 CFG = StftConfig()
@@ -14,6 +20,93 @@ MR_CFGS = (
     StftConfig(n_fft=2048, hop_length=512, win_length=2048),
     StftConfig(n_fft=4096, hop_length=1024, win_length=4096),
 )
+
+
+def separator_features(
+    wave: torch.Tensor,
+    predict_phase: bool,
+    cfg: StftConfig = CFG,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """wave (B, T) -> features (B, C, F, frames), complex mixture spectrogram."""
+    spec = complex_spectrogram(wave, cfg)
+    logspec = log_mag(spec.abs()).unsqueeze(1)
+    if predict_phase:
+        phase = spec.angle()
+        logspec = torch.cat(
+            [logspec, torch.cos(phase).unsqueeze(1), torch.sin(phase).unsqueeze(1)],
+            dim=1,
+        )
+    return logspec, spec
+
+
+def model_outputs(
+    model: torch.nn.Module, feats: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    out = model(feats)
+    if isinstance(out, tuple):
+        return out[0], out[1]
+    return out, None
+
+
+def estimate_stem_waveforms(
+    mixture: torch.Tensor,
+    masks: torch.Tensor,
+    phase_delta: torch.Tensor | None = None,
+    cfg: StftConfig = CFG,
+) -> torch.Tensor:
+    """mixture (B, T), masks (B, S, F, frames) -> waveforms (B, S, T)."""
+    spec = complex_spectrogram(mixture, cfg)
+    mag = spec.abs()
+    phase = spec.angle()
+    if masks.shape[-2:] != mag.shape[-2:]:
+        masks = F.interpolate(masks, size=mag.shape[-2:], mode="bilinear", align_corners=False)
+        if phase_delta is not None:
+            phase_delta = F.interpolate(
+                phase_delta, size=mag.shape[-2:], mode="bilinear", align_corners=False
+            )
+    est_phase = phase.unsqueeze(1).expand_as(masks)
+    if phase_delta is not None:
+        est_phase = est_phase + phase_delta
+    est_spec = torch.polar(masks * mag.unsqueeze(1), est_phase)
+    b, s, freq, frames = est_spec.shape
+    window = cfg.window_tensor(est_spec.device)
+    wav = torch.istft(
+        est_spec.reshape(b * s, freq, frames),
+        n_fft=cfg.n_fft,
+        hop_length=cfg.hop_length,
+        win_length=cfg.win_length,
+        window=window,
+        center=True,
+        length=mixture.shape[-1],
+    )
+    return wav.reshape(b, s, -1)
+
+
+def _stack_targets(
+    batch_stems: dict[str, torch.Tensor], stem_names: tuple[str, ...]
+) -> torch.Tensor:
+    return torch.stack([batch_stems[name] for name in stem_names], dim=1)
+
+
+def _neg_si_sdr_batch(est: torch.Tensor, ref: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """est/ref (N, T). Mean negative SI-SDR, matching the per-clip objective."""
+    est = est - est.mean(dim=-1, keepdim=True)
+    ref = ref - ref.mean(dim=-1, keepdim=True)
+    ref_energy = ref.pow(2).sum(dim=-1, keepdim=True) + eps
+    proj = (est * ref).sum(dim=-1, keepdim=True) * ref / ref_energy
+    noise = est - proj
+    si_sdr = 10 * torch.log10(
+        (proj.pow(2).sum(dim=-1) + eps) / (noise.pow(2).sum(dim=-1) + eps)
+    )
+    return -si_sdr.mean()
+
+
+def _logmag_loss(est: torch.Tensor, ref: torch.Tensor, cfg: StftConfig) -> torch.Tensor:
+    """est/ref (B, S, T) -> L1 of log-magnitude spectrograms."""
+    b, s, t = est.shape
+    est_spec = complex_spectrogram(est.reshape(b * s, t), cfg).abs()
+    ref_spec = complex_spectrogram(ref.reshape(b * s, t), cfg).abs()
+    return F.l1_loss(log_mag(est_spec), log_mag(ref_spec))
 
 
 def waveform_batch_to_logspec(wave: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
@@ -43,25 +136,25 @@ def vocal_l1_loss(
     mixture: torch.Tensor,
     target_vocals: torch.Tensor,
     mask: torch.Tensor,
+    phase_delta: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """mask: (B, 1, F, Tf) from U-Net."""
-    loss = torch.tensor(0.0, device=mixture.device)
-    for i in range(mixture.shape[0]):
-        est = masked_waveform(mixture[i], mask[i, 0], mixture.shape[1])
-        loss = loss + F.l1_loss(est, target_vocals[i])
-    return loss / mixture.shape[0]
+    est = estimate_stem_waveforms(mixture, mask, phase_delta)
+    return F.l1_loss(est[:, 0], target_vocals)
 
 
 def _multi_stem_estimates(
     mixture: torch.Tensor,
     masks: torch.Tensor,
     stem_names: tuple[str, ...],
+    phase_delta: torch.Tensor | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Per-batch-item estimated waveforms per stem."""
+    est = estimate_stem_waveforms(mixture, masks, phase_delta)
     out: dict[str, list[torch.Tensor]] = {n: [] for n in stem_names}
-    for b in range(mixture.shape[0]):
-        for i, name in enumerate(stem_names):
-            out[name].append(masked_waveform(mixture[b], masks[b, i], mixture.shape[1]))
+    for i, name in enumerate(stem_names):
+        for b in range(est.shape[0]):
+            out[name].append(est[b, i])
     return out
 
 
@@ -70,14 +163,12 @@ def multi_stem_l1_loss(
     batch_stems: dict[str, torch.Tensor],
     masks: torch.Tensor,
     stem_names: tuple[str, ...] = STEM_NAMES,
+    phase_delta: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """masks: (B, S, F, Tf) softmax over stem dim."""
-    loss = torch.tensor(0.0, device=mixture.device)
-    ests = _multi_stem_estimates(mixture, masks, stem_names)
-    for name in stem_names:
-        for b, est in enumerate(ests[name]):
-            loss = loss + F.l1_loss(est, batch_stems[name][b])
-    return loss / (mixture.shape[0] * len(stem_names))
+    est = estimate_stem_waveforms(mixture, masks, phase_delta)
+    target = _stack_targets(batch_stems, stem_names)
+    return F.l1_loss(est, target)
 
 
 def multi_stem_spec_loss(
@@ -85,16 +176,12 @@ def multi_stem_spec_loss(
     batch_stems: dict[str, torch.Tensor],
     masks: torch.Tensor,
     stem_names: tuple[str, ...] = STEM_NAMES,
+    phase_delta: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """L1 on log-magnitude spectrograms of estimates vs targets."""
-    loss = torch.tensor(0.0, device=mixture.device)
-    ests = _multi_stem_estimates(mixture, masks, stem_names)
-    for name in stem_names:
-        for b, est in enumerate(ests[name]):
-            em, _ = magnitude_spectrogram(est, CFG)
-            tm, _ = magnitude_spectrogram(batch_stems[name][b], CFG)
-            loss = loss + F.l1_loss(log_mag(em), log_mag(tm))
-    return loss / (mixture.shape[0] * len(stem_names))
+    est = estimate_stem_waveforms(mixture, masks, phase_delta)
+    target = _stack_targets(batch_stems, stem_names)
+    return _logmag_loss(est, target, CFG)
 
 
 def multi_stem_hybrid_loss(
@@ -103,10 +190,13 @@ def multi_stem_hybrid_loss(
     masks: torch.Tensor,
     stem_names: tuple[str, ...] = STEM_NAMES,
     wave_weight: float = 0.5,
+    phase_delta: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    w = multi_stem_l1_loss(mixture, batch_stems, masks, stem_names)
-    s = multi_stem_spec_loss(mixture, batch_stems, masks, stem_names)
-    return wave_weight * w + (1.0 - wave_weight) * s
+    est = estimate_stem_waveforms(mixture, masks, phase_delta)
+    target = _stack_targets(batch_stems, stem_names)
+    wave = F.l1_loss(est, target)
+    spec = _logmag_loss(est, target, CFG)
+    return wave_weight * wave + (1.0 - wave_weight) * spec
 
 
 def four_stem_l1_loss(
@@ -152,13 +242,11 @@ def multi_stem_si_sdr_loss(
     batch_stems: dict[str, torch.Tensor],
     masks: torch.Tensor,
     stem_names: tuple[str, ...] = STEM_NAMES,
+    phase_delta: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    loss = torch.tensor(0.0, device=mixture.device)
-    ests = _multi_stem_estimates(mixture, masks, stem_names)
-    for name in stem_names:
-        for b, est in enumerate(ests[name]):
-            loss = loss + _neg_si_sdr(est, batch_stems[name][b])
-    return loss / (mixture.shape[0] * len(stem_names))
+    est = estimate_stem_waveforms(mixture, masks, phase_delta)
+    target = _stack_targets(batch_stems, stem_names)
+    return _neg_si_sdr_batch(est.reshape(-1, est.shape[-1]), target.reshape(-1, target.shape[-1]))
 
 
 def multi_stem_multires_spec_loss(
@@ -166,16 +254,14 @@ def multi_stem_multires_spec_loss(
     batch_stems: dict[str, torch.Tensor],
     masks: torch.Tensor,
     stem_names: tuple[str, ...] = STEM_NAMES,
+    phase_delta: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    loss = torch.tensor(0.0, device=mixture.device)
-    ests = _multi_stem_estimates(mixture, masks, stem_names)
+    est = estimate_stem_waveforms(mixture, masks, phase_delta)
+    target = _stack_targets(batch_stems, stem_names)
+    loss = est.new_zeros(())
     for cfg in MR_CFGS:
-        for name in stem_names:
-            for b, est in enumerate(ests[name]):
-                em, _ = magnitude_spectrogram(est, cfg)
-                tm, _ = magnitude_spectrogram(batch_stems[name][b], cfg)
-                loss = loss + F.l1_loss(log_mag(em), log_mag(tm))
-    return loss / (mixture.shape[0] * len(stem_names) * len(MR_CFGS))
+        loss = loss + _logmag_loss(est, target, cfg)
+    return loss / len(MR_CFGS)
 
 
 def multi_stem_pro_loss(
@@ -183,11 +269,27 @@ def multi_stem_pro_loss(
     batch_stems: dict[str, torch.Tensor],
     masks: torch.Tensor,
     stem_names: tuple[str, ...] = STEM_NAMES,
+    phase_delta: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    hybrid = multi_stem_hybrid_loss(mixture, batch_stems, masks, stem_names)
-    multires = multi_stem_multires_spec_loss(mixture, batch_stems, masks, stem_names)
-    sisdr = multi_stem_si_sdr_loss(mixture, batch_stems, masks, stem_names)
-    return hybrid + multires + 0.1 * sisdr
+    """Waveform + spectrogram + multi-resolution STFT + SI-SDR.
+
+    With a phase residual, also pull the sum of stems back toward the mixture
+    so the new phase head cannot drift into cancellation.
+    """
+    est = estimate_stem_waveforms(mixture, masks, phase_delta)
+    target = _stack_targets(batch_stems, stem_names)
+    wave = F.l1_loss(est, target)
+    spec = _logmag_loss(est, target, CFG)
+    multires = est.new_zeros(())
+    for cfg in MR_CFGS:
+        multires = multires + _logmag_loss(est, target, cfg)
+    multires = multires / len(MR_CFGS)
+    flat_t = est.shape[-1]
+    sisdr = _neg_si_sdr_batch(est.reshape(-1, flat_t), target.reshape(-1, flat_t))
+    loss = 0.5 * wave + 0.5 * spec + multires + 0.1 * sisdr
+    if phase_delta is not None:
+        loss = loss + 0.25 * F.l1_loss(est.sum(dim=1), mixture)
+    return loss
 
 
 def four_stem_si_sdr_loss(
@@ -222,23 +324,18 @@ def separate_stems(
 ) -> dict[str, torch.Tensor]:
     """Return dict of stem waveforms (1-stem vocals or multi-stem)."""
     mixture = mixture.to(device)
-    logspec, _ = waveform_batch_to_logspec(mixture.unsqueeze(0))
+    predict_phase = bool(getattr(model, "predict_phase", False))
+    feats, _ = separator_features(mixture.unsqueeze(0), predict_phase)
     with torch.no_grad():
-        masks = model(logspec.to(device))
+        masks, phase_delta = model_outputs(model, feats)
 
     if stem_names is None:
         stem_names = stem_names_for(masks.shape[1])
     if len(stem_names) != masks.shape[1]:
         raise ValueError(f"Expected {len(stem_names)} stem names, masks have {masks.shape[1]}")
 
-    out: dict[str, torch.Tensor] = {}
-    if masks.shape[1] == 1:
-        out["vocals"] = masked_waveform(mixture, masks[0, 0], mixture.shape[0]).cpu()
-        return out
-
-    for i, name in enumerate(stem_names):
-        out[name] = masked_waveform(mixture, masks[0, i], mixture.shape[0]).cpu()
-    return out
+    waves = estimate_stem_waveforms(mixture.unsqueeze(0), masks, phase_delta)
+    return {name: waves[0, i].cpu() for i, name in enumerate(stem_names)}
 
 
 def separate_mono_waveform(

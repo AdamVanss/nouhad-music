@@ -1,0 +1,153 @@
+@import "tailwindcss";
+
+:root {
+  --background: #050505;
+  --foreground: #e8e8e8;
+  --card: #121212;
+  --primary: #5fd832;
+  --primary-foreground: #050505;
+  --muted-foreground: #9a9a9a;
+  --destructive: #ef4444;
+  --border: #2a2a2a;
+  --ring: #5fd832;
+  --radius-button: 0.375rem;
+  --radius-input: 0.25rem;
+  --radius-panel: 0.625rem;
+  --gutter: clamp(1.25rem, 4vw, 3.5rem);
+  --header-h: 4.25rem;
+  --touch-min: 2.75rem;
+  --section-pad-y: clamp(2.5rem, 6vw, 5rem);
+  --lime: #5fd832;
+  --lime-dim: #6ec82d;
+  --surface-1: #0a0a0a;
+  --surface-2: #121212;
+  --surface-3: #1a1a1a;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-lime: var(--lime);
+  --color-lime-dim: var(--lime-dim);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --font-sans: var(--font-geist);
+  --font-display: var(--font-bricolage);
+  --font-mono: var(--font-mono);
+  --radius-sm: var(--radius-input);
+  --radius-md: var(--radius-button);
+  --radius-lg: var(--radius-panel);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist), system-ui, sans-serif;
+  min-height: 100%;
+  scrollbar-color: #3a3a3a transparent;
+  scrollbar-width: thin;
+}
+
+h1,
+h2,
+h3,
+.font-display {
+  font-family: var(--font-bricolage), var(--font-geist), system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--lime) 35%, transparent);
+  color: #fff;
+}
+
+.page-gutter {
+  padding-inline: var(--gutter);
+}
+
+.pressable {
+  transition:
+    transform 180ms var(--ease-out),
+    border-color 180ms var(--ease-out),
+    background-color 180ms var(--ease-out),
+    color 180ms var(--ease-out);
+}
+
+.pressable:active {
+  transform: scale(0.98);
+}
+
+.grain {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  opacity: 0.018;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.eyebrow {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: color-mix(in oklab, #fff 45%, transparent);
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rise-in {
+  animation: rise-in 320ms var(--ease-out) both;
+}
+
+@keyframes scan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(260%);
+  }
+}
+
+.scan-bar {
+  animation: scan 1.4s var(--ease-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .pressable:active {
+    transform: none;
+  }
+}

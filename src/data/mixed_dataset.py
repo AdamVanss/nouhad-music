@@ -5,7 +5,7 @@ import random
 from torch.utils.data import ConcatDataset, Dataset
 
 from src.data.moises_dataset import MoisesStemDataset
-from src.data.musdb_dataset import MusdbStemDataset
+from src.data.musdb_dataset import MusdbStemDataset, TrackGroupedSampler
 
 
 class MixedStemDataset(Dataset):
@@ -41,16 +41,27 @@ def build_train_val_loaders(
     num_stems: int,
     segment_seconds: float,
     batch_size: int,
+    chunks_per_track: int = 1,
+    pin_memory: bool = False,
 ):
-    """Return (train_ds, val_ds) for musdb | moises | mixed."""
+    """Return (train_ds, val_ds, train_loader, val_loader) for musdb | moises | mixed."""
     from torch.utils.data import DataLoader
 
+    train_sampler = None
     if dataset == "musdb":
-        train_ds = MusdbStemDataset(subset="train", segment_seconds=segment_seconds)
+        train_ds = MusdbStemDataset(
+            subset="train",
+            segment_seconds=segment_seconds,
+            chunks_per_track=chunks_per_track,
+        )
         try:
             val_ds = MusdbStemDataset(subset="test", segment_seconds=segment_seconds)
         except Exception:
             val_ds = train_ds
+        if chunks_per_track > 1:
+            train_sampler = TrackGroupedSampler(train_ds.n_tracks, chunks_per_track, shuffle=True)
+    elif chunks_per_track != 1:
+        raise ValueError("--chunks-per-track is supported for --dataset musdb")
     elif dataset == "moises":
         train_ds = MoisesStemDataset(
             num_stems=num_stems, segment_seconds=segment_seconds, split="train"
@@ -71,9 +82,19 @@ def build_train_val_loaders(
         raise ValueError(f"Unknown dataset={dataset}")
 
     train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True, num_workers=0
+        train_ds,
+        batch_size=batch_size,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
+        num_workers=0,
+        pin_memory=pin_memory,
+        drop_last=False,
     )
     val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False, num_workers=0
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=pin_memory,
     )
     return train_ds, val_ds, train_loader, val_loader

@@ -8,7 +8,7 @@ import torch
 
 from src.audio.load import load_mono
 from src.models.unet_separator import UNetSeparator
-from src.data.stems import STEM_NAMES_4, stem_names_for
+from src.data.stems import stem_names_for
 from src.pipeline import separate_stems
 
 # Long songs: one full STFT OOMs on CPU; process fixed-length windows instead.
@@ -85,11 +85,16 @@ def main() -> None:
     num_stems = int(ckpt.get("num_stems", 1))
     if "stem_names" in ckpt:
         stem_names = tuple(ckpt["stem_names"])
+    elif num_stems == 1:
+        stem_names = ("vocals",)
     else:
-        stem_names = stem_names_for(num_stems) if num_stems > 1 else STEM_NAMES_4
+        stem_names = stem_names_for(num_stems)
     base = int(ckpt.get("base", 16))
     depth = int(ckpt.get("depth", 3))
-    model = UNetSeparator(base=base, num_stems=num_stems, depth=depth).to(device)
+    predict_phase = bool(ckpt.get("predict_phase", False))
+    model = UNetSeparator(
+        base=base, num_stems=num_stems, depth=depth, predict_phase=predict_phase
+    ).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
 

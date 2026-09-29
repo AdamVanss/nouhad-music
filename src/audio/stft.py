@@ -17,6 +17,24 @@ class StftConfig:
         return torch.hann_window(self.win_length, device=device)
 
 
+def complex_spectrogram(waveform: torch.Tensor, cfg: StftConfig) -> torch.Tensor:
+    """Batched STFT. waveform (B, T) or (T,) -> complex (B, freq, frames)."""
+    if waveform.dim() == 1:
+        waveform = waveform.unsqueeze(0)
+    if waveform.dim() != 2:
+        raise ValueError(f"Expected (B, T) waveform, got shape {tuple(waveform.shape)}")
+    window = cfg.window_tensor(waveform.device)
+    return torch.stft(
+        waveform,
+        n_fft=cfg.n_fft,
+        hop_length=cfg.hop_length,
+        win_length=cfg.win_length,
+        window=window,
+        return_complex=True,
+        center=True,
+    )
+
+
 def magnitude_spectrogram(
     waveform: torch.Tensor,
     cfg: StftConfig,

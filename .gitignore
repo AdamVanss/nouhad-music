@@ -5,6 +5,12 @@ outputs/
 checkpoints/**
 !checkpoints/*.pt
 !checkpoints/README.md
+# GitHub rejects files over 100 MB. The app uses pretrained HTDemucs when these are absent.
+checkpoints/htdemucs_finetune.pt
+checkpoints/htdemucs_finetune_last.pt
+# Rebuilt by setup.sh
+movie-recommendation-system/artifacts/
+movie-recommendation-system/data_project/
 .env
 __pycache__/
 *.pyc

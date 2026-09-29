@@ -1,4 +1,11 @@
-"""U-Net: log-magnitude spectrogram -> stem masks (softmax or sigmoid)."""
+"""U-Net: log-magnitude spectrogram -> stem masks (softmax or sigmoid).
+
+Phase-aware mode also reads cos/sin of the mixture phase and predicts a
+bounded per-stem phase residual. The new layers are initialized so a
+magnitude checkpoint still separates exactly as before at step 0.
+"""
+
+import math
 
 import torch
 import torch.nn as nn
@@ -33,18 +40,34 @@ class ConvBlock(nn.Module):
 
 class UNetSeparator(nn.Module):
     """
-    Input: (B, 1, F, T) log magnitude. Output masks (B, num_stems, F, T).
+    Input: (B, 1, F, T) log magnitude, or (B, 3, F, T) when predict_phase.
+    Output masks (B, num_stems, F, T), plus phase residual in radians if enabled.
     depth=3: small net (default, matches early checkpoints).
     depth=4: extra encoder level — train with --base 32 for much better capacity.
     """
 
-    def __init__(self, base: int = 16, num_stems: int = 1, depth: int = 3):
+    def __init__(
+        self,
+        base: int = 16,
+        num_stems: int = 1,
+        depth: int = 3,
+        predict_phase: bool = False,
+    ):
         super().__init__()
         if depth not in (3, 4):
             raise ValueError("depth must be 3 or 4")
         self.num_stems = num_stems
         self.depth = depth
         self.base = base
+        self.predict_phase = predict_phase
+        # 3 = log magnitude, cos(phase), sin(phase). Projected back to 1 channel
+        # so the pretrained encoder weights still load unchanged.
+        self.in_channels = 3 if predict_phase else 1
+        if predict_phase:
+            self.input_proj = nn.Conv2d(3, 1, kernel_size=1, bias=False)
+            nn.init.zeros_(self.input_proj.weight)
+            with torch.no_grad():
+                self.input_proj.weight[:, 0, 0, 0] = 1.0
 
         self.enc1 = ConvBlock(1, base)
         self.enc2 = ConvBlock(base, base * 2)
@@ -59,8 +82,16 @@ class UNetSeparator(nn.Module):
         self.dec2 = ConvBlock(base * 4 + base * 2, base * 2)
         self.dec1 = ConvBlock(base * 2 + base, base)
         self.head = nn.Conv2d(base, num_stems, kernel_size=1)
+        if predict_phase:
+            self.phase_head = nn.Conv2d(base, num_stems, kernel_size=1)
+            nn.init.zeros_(self.phase_head.weight)
+            nn.init.zeros_(self.phase_head.bias)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if self.predict_phase:
+            x = self.input_proj(x)
         e1 = self.enc1(x)
         e2 = self.enc2(self.pool(e1))
         e3 = self.enc3(self.pool(e2))
@@ -80,5 +111,13 @@ class UNetSeparator(nn.Module):
         if out.shape[-2:] != x.shape[-2:]:
             out = F.interpolate(out, size=x.shape[-2:], mode="bilinear", align_corners=False)
         if self.num_stems == 1:
-            return torch.sigmoid(out)
-        return torch.softmax(out, dim=1)
+            masks = torch.sigmoid(out)
+        else:
+            masks = torch.softmax(out, dim=1)
+        if not self.predict_phase:
+            return masks
+        delta = self.phase_head(d1)
+        if delta.shape[-2:] != x.shape[-2:]:
+            delta = F.interpolate(delta, size=x.shape[-2:], mode="bilinear", align_corners=False)
+        # Zero weights => zero residual, so fine-tuning starts at the magnitude model.
+        return masks, torch.tanh(delta) * math.pi
