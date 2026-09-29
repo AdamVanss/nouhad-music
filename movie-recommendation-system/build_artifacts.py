@@ -1,8 +1,7 @@
 """Download the TMDB 5000 tables and build the pickles Cinematch imports.
 
-The upstream repo gitignores artifacts/ and data_project/. This follows the
-notebook in notebooks/programm.ipynb: merge movies with credits, build a tag
-string, stem it, then save a count-vector cosine matrix.
+The upstream repo gitignores artifacts/ and data_project/. Merge movies with
+credits, build a tag string, stem it, then save a count-vector cosine matrix.
 """
 
 import ast

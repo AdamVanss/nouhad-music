@@ -1,22 +1,5 @@
-# PyTorch: on Windows CPU, install first (faster than default PyPI on slow networks):
-#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+# Runtime for the stem separator and face classifier.
+# demucs, FastAPI, and OpenCV are installed by setup.sh.
 torch>=2.2.0
-torchaudio>=2.2.0
 numpy>=1.24.0
-matplotlib>=3.7.0
 soundfile>=0.12.0
-
-# Dataset (after you download MUSDB18 — see docs/MUSDB18_SETUP.md)
-musdb>=0.4.0
-
-# Optional: MoisesDB for 5/6-stem + mixed fine-tune (see docs/MODEL_UPGRADE.md)
-# pip install git+https://github.com/moises-ai/moises-db.git
-
-# Metrics (training evaluation)
-museval>=0.4.0
-
-# App (Step 10)
-gradio>=4.0.0
-
-# Optional: industry-quality separation for demo compare (see scripts/separate_demucs.py)
-# demucs>=4.0.0
