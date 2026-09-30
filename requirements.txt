@@ -3,3 +3,5 @@
 torch>=2.2.0
 numpy>=1.24.0
 soundfile>=0.12.0
+# Bundled ffmpeg binary, so a PC without ffmpeg can still read mp3/m4a/flac.
+imageio-ffmpeg>=0.5.1

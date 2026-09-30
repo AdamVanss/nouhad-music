@@ -30,15 +30,32 @@ def load_htdemucs(checkpoint: Path | None = None, device: torch.device | None = 
     return model
 
 
+def find_ffmpeg() -> str:
+    """A system ffmpeg if there is one, otherwise the copy bundled by imageio-ffmpeg."""
+    system = shutil.which("ffmpeg")
+    if system:
+        return system
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "ffmpeg was not found. Run: python -m pip install imageio-ffmpeg"
+        ) from exc
+
+
 def decode_audio(path: Path, samplerate: int, channels: int) -> torch.Tensor:
     """Any ffmpeg-readable file -> float (channels, T). torchaudio.load needs torchcodec here."""
-    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
-    raw = subprocess.run(
-        [ffmpeg, "-v", "error", "-i", str(path), "-f", "f32le", "-ac", str(channels),
+    result = subprocess.run(
+        [find_ffmpeg(), "-v", "error", "-i", str(path), "-f", "f32le", "-ac", str(channels),
          "-ar", str(samplerate), "-"],
-        check=True,
         capture_output=True,
-    ).stdout
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"ffmpeg could not read this file. {detail}")
+    raw = result.stdout
     audio = np.frombuffer(raw, dtype=np.float32).reshape(-1, channels)
     return torch.from_numpy(audio.T.copy())
 
